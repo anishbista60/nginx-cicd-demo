@@ -1,5 +1,7 @@
-# Bamboo remote agent running inside NKP. kubectl in the pod uses the
-# bamboo-agent service account automatically (in-cluster config).
+# Bamboo remote agent running inside NKP, using the official Atlassian image.
+# An init container downloads kubectl (deploy) and crane (check Docker Hub for
+# CI's image) and registers them as agent capabilities. kubectl in the pod uses
+# the bamboo-agent service account automatically (in-cluster config).
 # BAMBOO_SERVER_URL is replaced by `make nkp-agent BAMBOO_SERVER=...`.
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -34,9 +36,33 @@ spec:
       serviceAccountName: bamboo-agent
       securityContext:
         fsGroup: 2005                   # bamboo user in the agent image
+      initContainers:
+        - name: tools
+          image: docker.io/atlassian/bamboo-agent-base:11.0.7   # must match the Bamboo server
+          command: ["bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              # kubectl must be within one minor version of the cluster
+              curl -fsSLo /tools/kubectl "https://dl.k8s.io/release/v1.33.5/bin/linux/amd64/kubectl"
+              curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" \
+                | tar xz -C /tools crane
+              chmod +x /tools/kubectl /tools/crane
+              # The PVC hides the image's capabilities file: start from the
+              # image's copy and add ours.
+              caps=/agent-home/bin/bamboo-capabilities.properties
+              mkdir -p /agent-home/bin
+              cp "${BAMBOO_AGENT_HOME}/bin/bamboo-capabilities.properties" "${caps}"
+              /bamboo-update-capability.sh kubectl /usr/local/bin/kubectl "${caps}"
+              /bamboo-update-capability.sh crane /usr/local/bin/crane "${caps}"
+              chown -R 2005:2005 /agent-home
+          volumeMounts:
+            - name: tools
+              mountPath: /tools
+            - name: home
+              mountPath: /agent-home
       containers:
         - name: agent
-          image: docker.io/anish60/bamboo-agent-k8s:11.0.7
+          image: docker.io/atlassian/bamboo-agent-base:11.0.7
           imagePullPolicy: IfNotPresent
           env:
             - name: BAMBOO_SERVER
@@ -47,7 +73,15 @@ spec:
           volumeMounts:
             - name: home
               mountPath: /var/atlassian/application-data/bamboo-agent
+            - name: tools
+              mountPath: /usr/local/bin/kubectl
+              subPath: kubectl
+            - name: tools
+              mountPath: /usr/local/bin/crane
+              subPath: crane
       volumes:
+        - name: tools
+          emptyDir: {}
         - name: home
           persistentVolumeClaim:
             claimName: bamboo-agent-home

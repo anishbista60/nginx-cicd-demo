@@ -1,14 +1,10 @@
 IMAGE          ?= nginx-cicd-demo:local
-AGENT_IMAGE    ?= docker.io/anish60/bamboo-agent-k8s:11.0.7
 BAMBOO_SERVER  ?=
 
-.PHONY: build agent-image nkp-bootstrap nkp-agent nkp-status bamboo-up bamboo-down
+.PHONY: build nkp-bootstrap nkp-agent nkp-status bamboo-up bamboo-down
 
 build:              ## Build the app image locally
 	docker build --build-arg APP_VERSION=local -t $(IMAGE) app
-
-agent-image:        ## Build the Bamboo agent image locally (CI publishes it)
-	docker build -t $(AGENT_IMAGE) nkp/bamboo-agent
 
 nkp-bootstrap:      ## One-time, as NKP admin: namespaces + agent RBAC
 	kubectl apply -f k8s/namespace.yaml -f nkp/bamboo-agent/namespace.yaml

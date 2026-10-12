@@ -27,9 +27,8 @@ manage the app in namespace `nginx-demo` — no kubeconfig is stored anywhere.
 |---|---|
 | `app/` | Dockerfile (non-root nginx on 8080), nginx.conf with `/healthz`, static page |
 | `k8s/` | Namespace, Deployment (2 replicas, probes, rolling update), ClusterIP Service, optional Ingress |
-| `nkp/bamboo-agent/` | Agent image (kubectl + crane), namespace, RBAC, agent Deployment + PVC |
+| `nkp/bamboo-agent/` | Agent Deployment (official Atlassian image + kubectl/crane init container), PVC, namespace, RBAC |
 | `.github/workflows/ci.yml` | CI: build and push the app image |
-| `.github/workflows/agent-image.yml` | Builds/pushes `anish60/bamboo-agent-k8s` |
 | `bamboo-specs/bamboo.yml` | Bamboo plan + deployment project as code |
 | `bamboo/docker-compose.yml` | Run the Bamboo server with Docker |
 | `scripts/deploy.sh` | Deploy + smoke test + rollback |
@@ -39,9 +38,8 @@ manage the app in namespace `nginx-demo` — no kubeconfig is stored anywhere.
 ## Setup
 
 ### 1. GitHub and Docker Hub
-Images are published to Docker Hub:
-[`anish60/nginx-cicd-demo`](https://hub.docker.com/r/anish60/nginx-cicd-demo) (app) and
-[`anish60/bamboo-agent-k8s`](https://hub.docker.com/r/anish60/bamboo-agent-k8s) (agent).
+The app image is published to Docker Hub as
+[`anish60/nginx-cicd-demo`](https://hub.docker.com/r/anish60/nginx-cicd-demo).
 Add two repository secrets in **GitHub → Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
@@ -49,8 +47,9 @@ Add two repository secrets in **GitHub → Settings → Secrets and variables �
 | `DOCKERHUB_USERNAME` | `anish60` |
 | `DOCKERHUB_TOKEN` | a Docker Hub access token (Account settings → Personal access tokens, Read & Write) |
 
-Then run **Actions → Bamboo agent image → Run workflow** once to publish the agent image.
-Both Docker Hub repos must be public so NKP can pull them without credentials.
+The Docker Hub repo must be public so NKP can pull it without credentials. The agent
+uses Atlassian's official `atlassian/bamboo-agent-base` image, so there is no agent
+image to build.
 
 ### 2. Bamboo server
 ```bash
@@ -64,14 +63,15 @@ Base URL to that reachable address (not `localhost`).
 ### 3. NKP cluster (as cluster admin)
 ```bash
 export KUBECONFIG=~/.kube/nkp.conf          # from NKP UI → cluster → Download kubeconfig
-kubectl version                             # kubectl in the agent image must be within ±1 minor
+kubectl version                             # the agent's kubectl must be within ±1 minor
 make nkp-bootstrap                          # namespaces nginx-demo + bamboo, agent RBAC
 make nkp-agent BAMBOO_SERVER=http://<bamboo-host>:8085
 ```
 `nkp-agent` creates a 5Gi PVC with the default StorageClass (it keeps the agent's
-identity across restarts) and the agent Deployment. If the cluster's kubectl minor
-version differs by more than one from `v1.33`, change `KUBECTL_VERSION` in
-`nkp/bamboo-agent/Dockerfile` and rebuild.
+identity across restarts) and the agent Deployment. On each start, an init container
+downloads kubectl and crane and registers them as agent capabilities. If the cluster's
+minor version differs by more than one from `v1.33`, change the kubectl version in
+`nkp/bamboo-agent/agent.yaml`.
 
 Then in Bamboo → **⚙ → Agents → Agent authentication**, approve the new agent. Its
 capabilities include `kubectl` and `crane`. Optionally disable the server's local
@@ -112,8 +112,9 @@ Rollback: in Bamboo, open the deployment project → **nkp** → redeploy any ol
   or replace `polling` with a `remote` trigger in the Specs.
 - **Manual approval:** remove `build-success` from the environment's triggers and
   Bamboo will deploy only when you click *Deploy*.
-- **Air-gapped NKP / Docker Hub rate limits:** mirror both images into your registry
-  (e.g. Harbor) and point `image_repo` in the Specs and the image in
-  `nkp/bamboo-agent/agent.yaml` at it, or add an `imagePullSecret`.
-- **Upgrading Bamboo:** bump the version in `bamboo/docker-compose.yml`,
-  `.github/workflows/agent-image.yml` and `nkp/bamboo-agent/agent.yaml` together.
+- **Air-gapped NKP / Docker Hub rate limits:** mirror the app and agent images into
+  your registry (e.g. Harbor) and point `image_repo` in the Specs and the images in
+  `nkp/bamboo-agent/agent.yaml` at it, or add an `imagePullSecret`. The init container
+  also needs to reach dl.k8s.io and github.com.
+- **Upgrading Bamboo:** bump the version in `bamboo/docker-compose.yml` and both
+  images in `nkp/bamboo-agent/agent.yaml` together.
