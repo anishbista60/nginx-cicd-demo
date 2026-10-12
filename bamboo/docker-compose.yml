@@ -1,0 +1,18 @@
+# Local Bamboo Data Center server (needs a trial/dev license from my.atlassian.com).
+# Deployments run on a *remote agent installed on your host* — not in this
+# container — so the agent can use your Docker, kind and kubectl directly.
+services:
+  bamboo:
+    image: atlassian/bamboo:latest
+    container_name: bamboo
+    ports:
+      - "8085:8085"     # web UI
+      - "54663:54663"   # remote agent broker
+    environment:
+      - JVM_MAXIMUM_MEMORY=2048m
+    volumes:
+      - bamboo-data:/var/atlassian/application-data/bamboo
+    restart: unless-stopped
+
+volumes:
+  bamboo-data:

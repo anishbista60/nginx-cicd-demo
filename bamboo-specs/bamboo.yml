@@ -1,0 +1,95 @@
+# Bamboo Specs (YAML) — CD for nginx-cicd-demo
+#
+# Plan NGX-CICD:  polls the GitHub repo; for each new commit on main it waits
+#                 until GitHub Actions has pushed docker.io/anish60/...:sha-<commit>,
+#                 then publishes a "release" artifact (image.env + manifests).
+# Deployment:     on a successful plan build, deploys that release to the
+#                 local kind cluster (environment "kind-local").
+#
+# IMAGE_REPO below points at the Docker Hub repo anish60/nginx-cicd-demo.
+---
+version: 2
+plan:
+  project-key: NGX
+  key: CICD
+  name: nginx-cicd-demo
+
+repositories:
+  - nginx-cicd-demo:
+      scope: global          # linked repository created in Bamboo UI (see README)
+
+branches:
+  create: manually
+
+triggers:
+  - polling:
+      period: 60
+
+variables:
+  image_repo: docker.io/anish60/nginx-cicd-demo
+  wait_timeout: 900
+
+stages:
+  - Verify CI image:
+      manual: false
+      final: false
+      jobs:
+        - Wait for image
+
+Wait for image:
+  requirements:
+    - docker                 # capability on the remote agent (see README)
+  tasks:
+    - checkout:
+        force-clean-build: true
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |-
+            set -euo pipefail
+            export GIT_REVISION="${bamboo_planRepository_revision}"
+            export IMAGE_REPO="${bamboo_image_repo}"
+            export TIMEOUT_SEC="${bamboo_wait_timeout}"
+            bash scripts/wait-for-image.sh
+  artifacts:
+    - name: release
+      location: .
+      pattern: 'release/**,k8s/**,kind/**,scripts/**'
+      shared: true
+      required: true
+
+---
+version: 2
+deployment:
+  name: nginx-cicd-demo deploy
+  source-plan: NGX-CICD
+
+release-naming:
+  next-version-name: ${bamboo.planRepository.revision}
+  applies-to-branches: false
+
+environments:
+  - kind-local
+
+kind-local:
+  description: Local kind cluster (cicd-demo) on the Bamboo agent host
+  triggers:
+    - build-success           # auto-deploy after every green plan build
+  variables:
+    cluster_name: cicd-demo
+  requirements:
+    - docker
+    - kind
+    - kubectl
+  tasks:
+    - clean
+    - artifact-download:
+        destination: .
+    - script:
+        interpreter: SHELL
+        scripts:
+          - |-
+            set -euo pipefail
+            chmod +x scripts/*.sh
+            export CLUSTER_NAME="${bamboo_cluster_name}"
+            ./scripts/cd-deploy.sh release/image.env
