@@ -52,31 +52,26 @@ Add two repository secrets in **GitHub → Settings → Secrets and variables �
 Then run **Actions → Bamboo agent image → Run workflow** once to publish the agent image.
 Both Docker Hub repos must be public so NKP can pull them without credentials.
 
-### 2. Bamboo server (`demo.bamboo.com`)
-Run it on a host the NKP nodes can reach (e.g. the bastion):
+### 2. Bamboo server
 ```bash
-make bamboo-up                      # Bamboo 11.0.7 on ports 8085 + 54663
+make bamboo-up                      # http://<this-host>:8085
 ```
-Open the ports if firewalld is on, and map the name on every machine that uses the UI:
-```bash
-firewall-cmd --add-port={8085,54663}/tcp --permanent && firewall-cmd --reload
-echo "<bamboo-host-ip> demo.bamboo.com" | sudo tee -a /etc/hosts
-```
-Open http://demo.bamboo.com:8085 and finish the setup wizard (trial license, admin
-user, embedded DB is fine for a demo). In **⚙ → General configuration**, set the
-Base URL to `http://demo.bamboo.com:8085`.
+Finish the setup wizard (trial license, admin user, embedded DB is fine for a demo).
+The agent pod in NKP connects **to** the server, so the NKP nodes must reach this
+host on ports **8085** and **54663**. In **⚙ → General configuration**, set the
+Base URL to that reachable address (not `localhost`).
 
 ### 3. NKP cluster (as cluster admin)
 ```bash
+export KUBECONFIG=~/.kube/nkp.conf          # from NKP UI → cluster → Download kubeconfig
+kubectl version                             # kubectl in the agent image must be within ±1 minor
 make nkp-bootstrap                          # namespaces nginx-demo + bamboo, agent RBAC
-make nkp-agent BAMBOO_IP=<bamboo-host-ip>   # agent connects to http://demo.bamboo.com:8085
-kubectl -n bamboo logs deploy/bamboo-agent -f
+make nkp-agent BAMBOO_SERVER=http://<bamboo-host>:8085
 ```
-Pods don't use the nodes' `/etc/hosts`, so `nkp-agent` adds a `hostAliases` entry
-(`demo.bamboo.com → BAMBOO_IP`) to the agent pod instead. It also creates a 5Gi PVC
-with the default StorageClass (keeps the agent's identity across restarts). The agent
-image's kubectl is v1.33; if the cluster is more than one minor version away, change
-`KUBECTL_VERSION` in `nkp/bamboo-agent/Dockerfile`.
+`nkp-agent` creates a 5Gi PVC with the default StorageClass (it keeps the agent's
+identity across restarts) and the agent Deployment. If the cluster's kubectl minor
+version differs by more than one from `v1.33`, change `KUBECTL_VERSION` in
+`nkp/bamboo-agent/Dockerfile` and rebuild.
 
 Then in Bamboo → **⚙ → Agents → Agent authentication**, approve the new agent. Its
 capabilities include `kubectl` and `crane`. Optionally disable the server's local

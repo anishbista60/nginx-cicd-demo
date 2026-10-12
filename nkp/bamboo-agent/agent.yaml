@@ -1,8 +1,6 @@
 # Bamboo remote agent running inside NKP. kubectl in the pod uses the
 # bamboo-agent service account automatically (in-cluster config).
-# BAMBOO_SERVER_URL, BAMBOO_HOST and BAMBOO_IP are filled in by `make nkp-agent`.
-# hostAliases resolves the Bamboo hostname inside the pod (pods don't read the
-# nodes' /etc/hosts).
+# BAMBOO_SERVER_URL is replaced by `make nkp-agent BAMBOO_SERVER=...`.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -34,9 +32,6 @@ spec:
         app: bamboo-agent
     spec:
       serviceAccountName: bamboo-agent
-      hostAliases:
-        - ip: BAMBOO_IP
-          hostnames: [BAMBOO_HOST]
       securityContext:
         fsGroup: 2005                   # bamboo user in the agent image
       containers:
