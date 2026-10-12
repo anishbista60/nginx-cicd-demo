@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the nginx demo to the current Kubernetes cluster, smoke-test it, and
-# roll back on failure. Used by GitHub Actions (ephemeral kind cluster) and by
-# Bamboo (agent pod inside NKP, in-cluster service account).
+# roll back on failure. Used by Bamboo (agent pod inside NKP, in-cluster
+# service account); also works from a workstation with a kubeconfig.
 #
 # The namespace must already exist (k8s/namespace.yaml, applied by an admin).
 #

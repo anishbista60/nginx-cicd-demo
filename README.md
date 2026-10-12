@@ -2,12 +2,12 @@
 
 ```
  git push ──► GitHub Actions (CI)                        Bamboo (CD)
-              ├─ lint: hadolint, kubeconform, shellcheck  ├─ Plan NGX-CICD (polls repo every 60s)
-              ├─ build image                              │   └─ wait for docker.io/...:sha-<commit>
-              ├─ Trivy scan (fail on HIGH/CRITICAL)       │      → shared artifact "release"
-              ├─ smoke test on throwaway kind in runner   └─ Deployment env "nkp"
-              └─ push docker.io/anish60/nginx-cicd-demo       ├─ kubectl apply + rollout status
-                   :sha-<commit> and :latest  ───────────►    ├─ curl smoke test (checks version)
+              ├─ build image                              ├─ Plan NGX-CICD (polls repo every 60s)
+              └─ push docker.io/anish60/nginx-cicd-demo   │   └─ wait for docker.io/...:sha-<commit>
+                   :sha-<commit> and :latest              │      → shared artifact "release"
+                                                          └─ Deployment env "nkp"
+                                                              ├─ kubectl apply + rollout status
+                                                              ├─ curl smoke test (checks version)
                                                               └─ auto rollback on failure
                                                                         │
                                           Bamboo agent pod (namespace bamboo) in the NKP cluster
@@ -28,11 +28,11 @@ manage the app in namespace `nginx-demo` — no kubeconfig is stored anywhere.
 | `app/` | Dockerfile (non-root nginx on 8080), nginx.conf with `/healthz`, static page |
 | `k8s/` | Namespace, Deployment (2 replicas, probes, rolling update), ClusterIP Service, optional Ingress |
 | `nkp/bamboo-agent/` | Agent image (kubectl + crane), namespace, RBAC, agent Deployment + PVC |
-| `.github/workflows/ci.yml` | CI pipeline for the app |
+| `.github/workflows/ci.yml` | CI: build and push the app image |
 | `.github/workflows/agent-image.yml` | Builds/pushes `anish60/bamboo-agent-k8s` |
 | `bamboo-specs/bamboo.yml` | Bamboo plan + deployment project as code |
 | `bamboo/docker-compose.yml` | Run the Bamboo server with Docker |
-| `scripts/deploy.sh` | Shared deploy + smoke test + rollback (used by CI and CD) |
+| `scripts/deploy.sh` | Deploy + smoke test + rollback |
 | `scripts/wait-for-image.sh` | Bamboo build: wait for CI's image, emit `release/image.env` |
 | `scripts/cd-deploy.sh` | Bamboo deployment task |
 
@@ -100,7 +100,7 @@ kubectl -n nginx-demo port-forward svc/nginx-demo 8080:80   # http://localhost:8
 sed -i 's/Hello from nginx/Hello again from nginx/' app/html/index.html
 git commit -am "update page" && git push
 ```
-1. GitHub Actions: lint → build/scan/kind test → push `sha-xxxxxxx`.
+1. GitHub Actions: build → push `sha-xxxxxxx`.
 2. Bamboo (≤60 s later) builds NGX-CICD on the NKP agent, waits for that tag, publishes the release.
 3. Deployment `nkp` triggers automatically, rolls out, smoke-tests, rolls back on failure.
 4. `make nkp-status` shows the new pods; the page shows `Version: sha-xxxxxxx`.

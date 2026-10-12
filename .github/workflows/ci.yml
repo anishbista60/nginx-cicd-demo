@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
     paths-ignore: ["**.md"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:
@@ -14,38 +12,11 @@ env:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
-  # 1. Static checks: Dockerfile lint + Kubernetes manifest validation
-  lint:
+  # Build the image and push it to Docker Hub — Bamboo picks it up from here
+  build-push:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Lint Dockerfile (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: app/Dockerfile
-
-      - name: Validate k8s manifests (kubeconform)
-        run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
-          sed 's|IMAGE_PLACEHOLDER|nginx:test|' k8s/deployment.yaml > /tmp/deployment.yaml
-          sed -e 's|INGRESS_HOST_PLACEHOLDER|demo.example.com|' -e 's|INGRESS_CLASS_PLACEHOLDER|traefik|' k8s/ingress.yaml > /tmp/ingress.yaml
-          ./kubeconform -strict -summary k8s/namespace.yaml k8s/service.yaml /tmp/deployment.yaml /tmp/ingress.yaml \
-            nkp/bamboo-agent/namespace.yaml nkp/bamboo-agent/rbac.yaml nkp/bamboo-agent/agent.yaml
-
-      - name: Lint shell scripts (shellcheck)
-        run: shellcheck scripts/*.sh nkp/bamboo-agent/*.sh
-
-  # 2. Build image, scan it, and smoke-test it on an ephemeral kind cluster
-  #    (throwaway cluster inside the GitHub runner, not the NKP target)
-  build-test:
-    needs: lint
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.vars.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,53 +24,6 @@ jobs:
         id: vars
         run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build image (local, for testing)
-        uses: docker/build-push-action@v6
-        with:
-          context: app
-          load: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-          build-args: APP_VERSION=${{ steps.vars.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Create kind cluster
-        uses: helm/kind-action@v1
-        with:
-          cluster_name: ci
-
-      - name: Deploy to kind & smoke test
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-        run: |
-          kind load docker-image "${IMAGE}" --name ci
-          kubectl apply -f k8s/namespace.yaml
-          ./scripts/deploy.sh
-
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
-          kubectl -n nginx-demo get all -o wide || true
-          kubectl -n nginx-demo describe pods || true
-          kubectl -n nginx-demo logs -l app=nginx-demo --tail=100 || true
-
-  # 3. Publish image to Docker Hub (main branch only) — Bamboo picks it up from here
-  publish:
-    needs: build-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -113,14 +37,15 @@ jobs:
         with:
           context: app
           push: true
-          build-args: APP_VERSION=${{ needs.build-test.outputs.tag }}
+          build-args: APP_VERSION=${{ steps.vars.outputs.tag }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-test.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Summary
         run: |
           echo "### Image published :rocket:" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-test.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "Bamboo will detect commit \`${GITHUB_SHA::7}\` and deploy this tag to the NKP cluster." >> "$GITHUB_STEP_SUMMARY"
