@@ -17,7 +17,7 @@ IMAGE="${IMAGE_REPO}:${TAG}"
 
 echo "Waiting for CI to publish ${IMAGE} (timeout ${TIMEOUT_SEC}s)"
 deadline=$(( $(date +%s) + TIMEOUT_SEC ))
-until docker manifest inspect "${IMAGE}" >/dev/null 2>&1; do
+until crane manifest "${IMAGE}" >/dev/null 2>&1; do
   if (( $(date +%s) > deadline )); then
     echo "Timed out: ${IMAGE} not found. Did the GitHub Actions CI run fail?"
     exit 1

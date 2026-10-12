@@ -32,12 +32,15 @@ jobs:
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
           sed 's|IMAGE_PLACEHOLDER|nginx:test|' k8s/deployment.yaml > /tmp/deployment.yaml
-          ./kubeconform -strict -summary k8s/namespace.yaml k8s/service.yaml /tmp/deployment.yaml
+          sed -e 's|INGRESS_HOST_PLACEHOLDER|demo.example.com|' -e 's|INGRESS_CLASS_PLACEHOLDER|traefik|' k8s/ingress.yaml > /tmp/ingress.yaml
+          ./kubeconform -strict -summary k8s/namespace.yaml k8s/service.yaml /tmp/deployment.yaml /tmp/ingress.yaml \
+            nkp/bamboo-agent/namespace.yaml nkp/bamboo-agent/rbac.yaml nkp/bamboo-agent/agent.yaml
 
       - name: Lint shell scripts (shellcheck)
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh nkp/bamboo-agent/*.sh
 
   # 2. Build image, scan it, and smoke-test it on an ephemeral kind cluster
+  #    (throwaway cluster inside the GitHub runner, not the NKP target)
   build-test:
     needs: lint
     runs-on: ubuntu-latest
@@ -74,14 +77,14 @@ jobs:
         uses: helm/kind-action@v1
         with:
           cluster_name: ci
-          config: kind/kind-config.yaml
 
       - name: Deploy to kind & smoke test
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-          CLUSTER_NAME: ci
-          SKIP_CLUSTER_CREATE: "true"
-        run: ./scripts/deploy.sh
+        run: |
+          kind load docker-image "${IMAGE}" --name ci
+          kubectl apply -f k8s/namespace.yaml
+          ./scripts/deploy.sh
 
       - name: Dump cluster state on failure
         if: failure()
@@ -120,4 +123,4 @@ jobs:
         run: |
           echo "### Image published :rocket:" >> "$GITHUB_STEP_SUMMARY"
           echo "\`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-test.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Bamboo will detect commit \`${GITHUB_SHA::7}\` and deploy this tag to the local kind cluster." >> "$GITHUB_STEP_SUMMARY"
+          echo "Bamboo will detect commit \`${GITHUB_SHA::7}\` and deploy this tag to the NKP cluster." >> "$GITHUB_STEP_SUMMARY"

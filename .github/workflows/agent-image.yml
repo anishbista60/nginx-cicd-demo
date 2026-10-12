@@ -1,0 +1,39 @@
+name: Bamboo agent image
+
+# Builds the in-cluster Bamboo agent (kubectl + crane) used for CD on NKP.
+on:
+  push:
+    branches: [main]
+    paths: ["nkp/bamboo-agent/Dockerfile", "nkp/bamboo-agent/agent-entrypoint.sh"]
+  workflow_dispatch:
+
+env:
+  IMAGE: docker.io/anish60/bamboo-agent-k8s
+  BAMBOO_VERSION: "11.0.7"      # keep in sync with bamboo/docker-compose.yml and agent.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: nkp/bamboo-agent/Dockerfile
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: nkp/bamboo-agent
+          push: true
+          build-args: BAMBOO_VERSION=${{ env.BAMBOO_VERSION }}
+          tags: ${{ env.IMAGE }}:${{ env.BAMBOO_VERSION }}

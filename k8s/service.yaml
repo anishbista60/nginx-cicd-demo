@@ -4,11 +4,10 @@ metadata:
   name: nginx-demo
   namespace: nginx-demo
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app: nginx-demo
   ports:
     - name: http
       port: 80
       targetPort: http
-      nodePort: 30080   # mapped to host :8080 by kind/kind-config.yaml

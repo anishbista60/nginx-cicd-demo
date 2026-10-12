@@ -1,0 +1,53 @@
+# Bamboo remote agent running inside NKP. kubectl in the pod uses the
+# bamboo-agent service account automatically (in-cluster config).
+# BAMBOO_SERVER_URL is replaced by `make nkp-agent BAMBOO_SERVER=...`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bamboo-agent-home
+  namespace: bamboo
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bamboo-agent
+  namespace: bamboo
+  labels:
+    app: bamboo-agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                      # RWO volume holds the agent's identity
+  selector:
+    matchLabels:
+      app: bamboo-agent
+  template:
+    metadata:
+      labels:
+        app: bamboo-agent
+    spec:
+      serviceAccountName: bamboo-agent
+      securityContext:
+        fsGroup: 2005                   # bamboo user in the agent image
+      containers:
+        - name: agent
+          image: docker.io/anish60/bamboo-agent-k8s:11.0.7
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BAMBOO_SERVER
+              value: BAMBOO_SERVER_URL
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits:   { cpu: "1",  memory: 2Gi }
+          volumeMounts:
+            - name: home
+              mountPath: /var/atlassian/application-data/bamboo-agent
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: bamboo-agent-home

@@ -4,7 +4,9 @@
 #                 until GitHub Actions has pushed docker.io/anish60/...:sha-<commit>,
 #                 then publishes a "release" artifact (image.env + manifests).
 # Deployment:     on a successful plan build, deploys that release to the
-#                 local kind cluster (environment "kind-local").
+#                 NKP cluster (environment "nkp"). Jobs run on the Bamboo agent
+#                 pod inside NKP (nkp/bamboo-agent/), which provides the
+#                 kubectl and crane capabilities.
 #
 # IMAGE_REPO below points at the Docker Hub repo anish60/nginx-cicd-demo.
 ---
@@ -38,7 +40,7 @@ stages:
 
 Wait for image:
   requirements:
-    - docker                 # capability on the remote agent (see README)
+    - crane                  # capability of the agent pod (nkp/bamboo-agent/)
   tasks:
     - checkout:
         force-clean-build: true
@@ -54,7 +56,7 @@ Wait for image:
   artifacts:
     - name: release
       location: .
-      pattern: 'release/**,k8s/**,kind/**,scripts/**'
+      pattern: 'release/**,k8s/**,scripts/**'
       shared: true
       required: true
 
@@ -69,17 +71,17 @@ release-naming:
   applies-to-branches: false
 
 environments:
-  - kind-local
+  - nkp
 
-kind-local:
-  description: Local kind cluster (cicd-demo) on the Bamboo agent host
+nkp:
+  description: NKP cluster, namespace nginx-demo (deployed by the in-cluster agent)
   triggers:
     - build-success           # auto-deploy after every green plan build
   variables:
-    cluster_name: cicd-demo
+    smoke_url: http://nginx-demo.nginx-demo.svc.cluster.local
+    ingress_class: kommander-traefik
+    # Add ingress_host (e.g. nginx-demo.apps.example.com) to also create an Ingress.
   requirements:
-    - docker
-    - kind
     - kubectl
   tasks:
     - clean
@@ -91,5 +93,7 @@ kind-local:
           - |-
             set -euo pipefail
             chmod +x scripts/*.sh
-            export CLUSTER_NAME="${bamboo_cluster_name}"
+            export SMOKE_URL="${bamboo_smoke_url}"
+            export INGRESS_HOST="${bamboo_ingress_host:-}"
+            export INGRESS_CLASS="${bamboo_ingress_class}"
             ./scripts/cd-deploy.sh release/image.env

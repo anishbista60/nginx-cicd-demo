@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bamboo deployment task: read the release metadata produced by the build
-# plan and deploy that exact image to the local kind cluster.
+# plan and deploy that exact image to the NKP cluster the agent runs in.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +10,7 @@ ENV_FILE="${1:-release/image.env}"
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
 
-echo "Deploying ${IMAGE} (commit ${GIT_REVISION}) to kind"
-IMAGE="${IMAGE}" PULL_IMAGE=true CLUSTER_NAME="${CLUSTER_NAME:-cicd-demo}" \
+echo "Deploying ${IMAGE} (commit ${GIT_REVISION}) to NKP"
+IMAGE="${IMAGE}" \
+SMOKE_URL="${SMOKE_URL:-http://nginx-demo.nginx-demo.svc.cluster.local}" \
   "${SCRIPT_DIR}/deploy.sh"

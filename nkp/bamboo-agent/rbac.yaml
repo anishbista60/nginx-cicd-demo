@@ -1,0 +1,43 @@
+# The agent pod's identity. It may only manage the app in namespace nginx-demo;
+# it cannot create namespaces or touch anything else in the cluster.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bamboo-agent
+  namespace: bamboo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nginx-demo-deployer
+  namespace: nginx-demo
+rules:
+  - apiGroups: ["apps"]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]                  # rollout status / undo
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [pods, pods/log, events]
+    verbs: [get, list, watch]                  # debugging failed rollouts
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses]
+    verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bamboo-agent-deployer
+  namespace: nginx-demo
+subjects:
+  - kind: ServiceAccount
+    name: bamboo-agent
+    namespace: bamboo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nginx-demo-deployer

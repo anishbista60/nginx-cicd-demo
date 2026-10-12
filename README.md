@@ -1,51 +1,47 @@
-# nginx CI/CD demo — GitHub Actions (CI) + Bamboo (CD) + kind
+# nginx CI/CD demo — GitHub Actions (CI) + Bamboo (CD) + NKP
 
 ```
- git push ──► GitHub Actions (CI)                        Bamboo (CD, on your machine)
+ git push ──► GitHub Actions (CI)                        Bamboo (CD)
               ├─ lint: hadolint, kubeconform, shellcheck  ├─ Plan NGX-CICD (polls repo every 60s)
               ├─ build image                              │   └─ wait for docker.io/...:sha-<commit>
               ├─ Trivy scan (fail on HIGH/CRITICAL)       │      → shared artifact "release"
-              ├─ smoke test on ephemeral kind cluster     └─ Deployment env "kind-local"
-              └─ push docker.io/anish60/nginx-cicd-demo       ├─ docker pull + kind load
-                   :sha-<commit> and :latest  ───────────►    ├─ kubectl apply + rollout status
-                                                              ├─ curl smoke test (checks version)
+              ├─ smoke test on throwaway kind in runner   └─ Deployment env "nkp"
+              └─ push docker.io/anish60/nginx-cicd-demo       ├─ kubectl apply + rollout status
+                   :sha-<commit> and :latest  ───────────►    ├─ curl smoke test (checks version)
                                                               └─ auto rollback on failure
                                                                         │
-                                                         local kind cluster "cicd-demo"
-                                                         http://localhost:8080
+                                          Bamboo agent pod (namespace bamboo) in the NKP cluster
+                                          deploys to namespace nginx-demo via its service account
 ```
 
 The image tag (`sha-<first 7 chars of commit>`) is the contract between the two
 systems: GitHub publishes it, Bamboo waits for it and deploys exactly that tag.
+
+Bamboo jobs run on a **remote agent that is a pod inside NKP**. kubectl in that pod
+uses the pod's service account (`bamboo/bamboo-agent`), which is only allowed to
+manage the app in namespace `nginx-demo` — no kubeconfig is stored anywhere.
 
 ## Repo layout
 
 | Path | Purpose |
 |---|---|
 | `app/` | Dockerfile (non-root nginx on 8080), nginx.conf with `/healthz`, static page |
-| `k8s/` | Namespace, Deployment (2 replicas, probes, rolling update), NodePort Service |
-| `kind/kind-config.yaml` | 1 control-plane + 1 worker; NodePort 30080 → host 8080 |
-| `.github/workflows/ci.yml` | CI pipeline |
+| `k8s/` | Namespace, Deployment (2 replicas, probes, rolling update), ClusterIP Service, optional Ingress |
+| `nkp/bamboo-agent/` | Agent image (kubectl + crane), namespace, RBAC, agent Deployment + PVC |
+| `.github/workflows/ci.yml` | CI pipeline for the app |
+| `.github/workflows/agent-image.yml` | Builds/pushes `anish60/bamboo-agent-k8s` |
 | `bamboo-specs/bamboo.yml` | Bamboo plan + deployment project as code |
-| `bamboo/docker-compose.yml` | Run Bamboo server locally |
+| `bamboo/docker-compose.yml` | Run the Bamboo server with Docker |
 | `scripts/deploy.sh` | Shared deploy + smoke test + rollback (used by CI and CD) |
 | `scripts/wait-for-image.sh` | Bamboo build: wait for CI's image, emit `release/image.env` |
 | `scripts/cd-deploy.sh` | Bamboo deployment task |
 
-## Prerequisites (on the machine that runs Bamboo's agent)
-
-Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Java 17+ (for the Bamboo agent), git, curl.
-
 ## Setup
 
-### 1. Push to GitHub & configure Docker Hub
-```bash
-git init && git add . && git commit -m "nginx CI/CD demo"
-git remote add origin https://github.com/anishbista60/nginx-cicd-demo.git
-git push -u origin main
-```
-Images are published to Docker Hub at
-[`anish60/nginx-cicd-demo`](https://hub.docker.com/r/anish60/nginx-cicd-demo).
+### 1. GitHub and Docker Hub
+Images are published to Docker Hub:
+[`anish60/nginx-cicd-demo`](https://hub.docker.com/r/anish60/nginx-cicd-demo) (app) and
+[`anish60/bamboo-agent-k8s`](https://hub.docker.com/r/anish60/bamboo-agent-k8s) (agent).
 Add two repository secrets in **GitHub → Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
@@ -53,58 +49,71 @@ Add two repository secrets in **GitHub → Settings → Secrets and variables �
 | `DOCKERHUB_USERNAME` | `anish60` |
 | `DOCKERHUB_TOKEN` | a Docker Hub access token (Account settings → Personal access tokens, Read & Write) |
 
-The Docker Hub repo is public, so Bamboo can pull without credentials.
+Then run **Actions → Bamboo agent image → Run workflow** once to publish the agent image.
+Both Docker Hub repos must be public so NKP can pull them without credentials.
 
-### 2. Try it locally without any CI/CD (optional sanity check)
+### 2. Bamboo server
 ```bash
-make deploy     # creates kind cluster, builds, deploys, smoke tests
-make test       # → http://localhost:8080
+make bamboo-up                      # http://<this-host>:8085
 ```
+Finish the setup wizard (trial license, admin user, embedded DB is fine for a demo).
+The agent pod in NKP connects **to** the server, so the NKP nodes must reach this
+host on ports **8085** and **54663**. In **⚙ → General configuration**, set the
+Base URL to that reachable address (not `localhost`).
 
-### 3. Start Bamboo
+### 3. NKP cluster (as cluster admin)
 ```bash
-make bamboo-up                      # http://localhost:8085
+export KUBECONFIG=~/.kube/nkp.conf          # from NKP UI → cluster → Download kubeconfig
+kubectl version                             # kubectl in the agent image must be within ±1 minor
+make nkp-bootstrap                          # namespaces nginx-demo + bamboo, agent RBAC
+make nkp-agent BAMBOO_SERVER=http://<bamboo-host>:8085
 ```
-Finish the setup wizard (paste a trial license, create admin user, embedded DB is fine for a demo).
+`nkp-agent` creates a 5Gi PVC with the default StorageClass (it keeps the agent's
+identity across restarts) and the agent Deployment. If the cluster's kubectl minor
+version differs by more than one from `v1.33`, change `KUBECTL_VERSION` in
+`nkp/bamboo-agent/Dockerfile` and rebuild.
 
-### 4. Install a remote agent on your host
-The built-in agent lives inside the container and can't see your kind cluster,
-so run a remote agent directly on your machine:
+Then in Bamboo → **⚙ → Agents → Agent authentication**, approve the new agent. Its
+capabilities include `kubectl` and `crane`. Optionally disable the server's local
+agents so every job lands on the NKP agent.
 
-1. Bamboo → **⚙ → Agents → Install remote agent** → download the installer JAR.
-2. `java -jar atlassian-bamboo-agent-installer-*.jar http://localhost:8085/agentServer/`
-3. Approve the agent in **Agents → Agent authentication**.
-4. On that agent, **Add capability → Custom**: `docker`, `kind`, `kubectl` (any value, e.g. `true`).
-5. Optional: disable the server's local agents so jobs always land on your host agent.
+### 4. Connect the repo and import the Specs
+1. Bamboo → **Create project** with key `NGX`.
+2. **⚙ → Linked repositories → Add → GitHub** (or Git), name it **`nginx-cicd-demo`**,
+   URL `https://github.com/anishbista60/nginx-cicd-demo.git`, branch `main`, and in the
+   **Bamboo Specs** tab enable **Scan for Bamboo Specs** and grant access to project `NGX`.
+3. Click **Scan**. Bamboo creates plan **NGX-CICD** and deployment project
+   **nginx-cicd-demo deploy** with environment **nkp**.
 
-### 5. Connect the repo and import the Specs
-1. `bamboo-specs/bamboo.yml` already sets `image_repo: docker.io/anish60/nginx-cicd-demo` (change it if you fork).
-2. Bamboo → **Create project** with key `NGX`.
-3. **⚙ → Linked repositories → Add → GitHub** (or Git), name it **`nginx-cicd-demo`**,
-   branch `main`, and in the **Bamboo Specs** tab enable **Scan for Bamboo Specs**
-   and grant access to project `NGX`.
-4. Click **Scan**. Bamboo creates plan **NGX-CICD** and deployment project
-   **nginx-cicd-demo deploy** with environment **kind-local**.
+### 5. Expose the app (optional)
+CD smoke-tests the Service from inside the cluster, so no Ingress is needed for the
+pipeline. To reach the app from a browser, add a variable `ingress_host`
+(e.g. `nginx-demo.apps.example.com`) to the `nkp` environment in
+`bamboo-specs/bamboo.yml`; the deploy then also creates an Ingress on NKP's Traefik
+(class `kommander-traefik` — check with `kubectl get ingressclass`). Quick look without DNS:
+```bash
+kubectl -n nginx-demo port-forward svc/nginx-demo 8080:80   # http://localhost:8080
+```
 
 ### 6. Watch the whole flow
 ```bash
-# change something visible
 sed -i 's/Hello from nginx/Hello again from nginx/' app/html/index.html
 git commit -am "update page" && git push
 ```
 1. GitHub Actions: lint → build/scan/kind test → push `sha-xxxxxxx`.
-2. Bamboo (≤60 s later) builds NGX-CICD, waits for that tag, publishes the release.
-3. Deployment `kind-local` triggers automatically, rolls out, smoke-tests.
-4. `curl localhost:8080` shows the new text and `Version: sha-xxxxxxx`.
+2. Bamboo (≤60 s later) builds NGX-CICD on the NKP agent, waits for that tag, publishes the release.
+3. Deployment `nkp` triggers automatically, rolls out, smoke-tests, rolls back on failure.
+4. `make nkp-status` shows the new pods; the page shows `Version: sha-xxxxxxx`.
 
-```bash
-kubectl -n nginx-demo rollout history deployment/nginx-demo   # one entry per release
-```
-Rollback: in Bamboo, open the deployment project → **kind-local** → redeploy any older release.
+Rollback: in Bamboo, open the deployment project → **nkp** → redeploy any older release.
 
 ## Notes & tweaks
-- **No polling / instant trigger:** expose Bamboo publicly (e.g. a tunnel) and add a GitHub
-  webhook, or replace `polling` with a `remote` trigger in the Specs.
-- **Manual approval for prod-like envs:** remove `build-success` from the environment's
-  triggers and Bamboo will deploy only when you click *Deploy*.
-- **Port 8080 busy?** Change `hostPort` in `kind/kind-config.yaml` and the curl URLs in `scripts/deploy.sh`.
+- **No polling / instant trigger:** expose Bamboo publicly and add a GitHub webhook,
+  or replace `polling` with a `remote` trigger in the Specs.
+- **Manual approval:** remove `build-success` from the environment's triggers and
+  Bamboo will deploy only when you click *Deploy*.
+- **Air-gapped NKP / Docker Hub rate limits:** mirror both images into your registry
+  (e.g. Harbor) and point `image_repo` in the Specs and the image in
+  `nkp/bamboo-agent/agent.yaml` at it, or add an `imagePullSecret`.
+- **Upgrading Bamboo:** bump the version in `bamboo/docker-compose.yml`,
+  `.github/workflows/agent-image.yml` and `nkp/bamboo-agent/agent.yaml` together.
