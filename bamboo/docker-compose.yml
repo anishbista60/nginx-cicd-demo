@@ -1,6 +1,6 @@
 # Bamboo Data Center server (needs a trial/dev license from my.atlassian.com).
 # Builds and deployments run on the agent pod inside NKP (nkp/bamboo-agent/),
-# so the NKP nodes must be able to reach this host on 8085 and 54663.
+# so the NKP nodes must reach this host on 8085 and 54663 as demo.bamboo.com.
 # Keep the version in sync with the agent image.
 services:
   bamboo:
