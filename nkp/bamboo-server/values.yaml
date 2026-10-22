@@ -1,0 +1,55 @@
+# Values for the Atlassian Helm chart atlassian-data-center/bamboo
+# (installed by `make nkp-bamboo`; the chart version pins the Bamboo version).
+# ingress.host is set from BAMBOO_HOST on the command line.
+
+database:
+  type: postgresql
+  url: jdbc:postgresql://bamboo-db:5432/bamboo
+  credentials:
+    secretName: bamboo-db
+
+volumes:
+  localHome:
+    persistentVolumeClaim:
+      create: true
+      resources:
+        requests:
+          storage: 10Gi
+  # One server replica, so a RWO volume is enough for the shared home.
+  sharedHome:
+    persistentVolumeClaim:
+      create: true
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests:
+          storage: 10Gi
+    nfsPermissionFixer:
+      enabled: false                   # not NFS; fsGroup sets the permissions
+
+# NKP's Traefik. It redirects HTTP to HTTPS and serves its default certificate.
+ingress:
+  create: true
+  className: kommander-traefik
+  nginx: false
+  https: true
+
+bamboo:
+  # No license in the cluster: enter it and the admin user in the setup wizard.
+  unattendedSetup: false
+  # Agents run in this cluster and reach the broker through the JMS service,
+  # not through the ingress (which only carries HTTP).
+  jmsService:
+    enabled: true
+  brokerUrl: "failover:(tcp://bamboo-jms.bamboo.svc.cluster.local:54663?wireFormat.maxInactivityDuration=300000)?initialReconnectDelay=15000&maxReconnectAttempts=10"
+  # Agents with this token register without manual approval.
+  securityToken:
+    secretName: bamboo-security-token
+  disableAgentAuth: true
+  resources:
+    jvm:
+      maxHeap: "1536m"
+      minHeap: "512m"
+    container:
+      requests:
+        cpu: "1"
+        memory: 2Gi
