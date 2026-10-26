@@ -1,16 +1,27 @@
-# The agent pod's identity. It may only manage the app in namespace nginx-demo;
-# it cannot create namespaces or touch anything else in the cluster.
+# The identity Bamboo deploys as. It may only manage workloads in one
+# namespace; it cannot create namespaces or touch anything else in the cluster.
+# NAMESPACE_PLACEHOLDER is replaced by nkp/setup.sh.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: bamboo-agent
-  namespace: bamboo
+  name: bamboo-deployer
+  namespace: NAMESPACE_PLACEHOLDER
+---
+# Long-lived token for the kubeconfig that nkp/setup.sh writes for Bamboo.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bamboo-deployer-token
+  namespace: NAMESPACE_PLACEHOLDER
+  annotations:
+    kubernetes.io/service-account.name: bamboo-deployer
+type: kubernetes.io/service-account-token
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: nginx-demo-deployer
-  namespace: nginx-demo
+  name: bamboo-deployer
+  namespace: NAMESPACE_PLACEHOLDER
 rules:
   - apiGroups: ["apps"]
     resources: [deployments]
@@ -31,13 +42,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: bamboo-agent-deployer
-  namespace: nginx-demo
+  name: bamboo-deployer
+  namespace: NAMESPACE_PLACEHOLDER
 subjects:
   - kind: ServiceAccount
-    name: bamboo-agent
-    namespace: bamboo
+    name: bamboo-deployer
+    namespace: NAMESPACE_PLACEHOLDER
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: nginx-demo-deployer
+  name: bamboo-deployer
