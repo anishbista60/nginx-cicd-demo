@@ -1,170 +1,183 @@
 # Bamboo CD to NKP
 
-Deploy an image that an existing Bamboo CI plan pushes to Harbor onto an NKP
-cluster, using a **Bamboo deployment project** configured in the Bamboo UI.
+This repo deploys an application image from Harbor to an NKP cluster, using a
+Bamboo deployment project.
 
-The target case: the HR Chatbot backend. Its CI already builds and pushes
-`<harbor-uat>/ajb-hr/be:<commit-sha>` (and `:latest`). This repo adds the CD part
-only:
+The build side (CI) already exists: a Bamboo build plan builds the image and pushes it
+to Harbor, tagged with the commit SHA. This repo only adds the deployment side (CD).
 
-| File | Who runs it | What it does |
+![Architecture](docs/architecture.svg)
+
+1. A developer pushes code to Bitbucket.
+2. Bamboo starts the existing build plan.
+3. The build pushes the image to Harbor, for example `ajb-hr/be:<commit-sha>`.
+4. When the build succeeds, Bamboo creates a release. We name the release after the
+   commit SHA, which is how Bamboo knows which image to deploy.
+5. The deployment project runs `scripts/bamboo-deploy.sh` on a Bamboo agent. The
+   script runs `kubectl set image` against the NKP cluster and waits until the new
+   pods are ready. If they don't become ready, it rolls back and the deployment fails.
+6. NKP pulls the image from Harbor and starts the new pods.
+
+To roll back, deploy an older release from Bamboo.
+
+## Files
+
+| File | Used by | Purpose |
 |---|---|---|
-| `nkp/setup.sh` + `nkp/rbac.yaml` | NKP admin, **once** | Namespace, service account `bamboo-deployer` limited to that namespace, Harbor pull secret, kubeconfig for Bamboo |
-| `scripts/apply-app.sh` | Once, before the first Bamboo deploy | Deployment, Service (and optional Ingress) for the app |
-| `scripts/bamboo-deploy.sh` | **Bamboo**, on every deployment | Pasted into a Script task: sets the new image, waits for the rollout, rolls back on failure |
-| `Makefile` | You, locally | Runs the same three steps from any machine with kubectl, to rehearse before the call |
+| `nkp/setup.sh`, `nkp/rbac.yaml` | NKP admin, once | Creates the namespace, a service account for Bamboo, the Harbor pull secret, and a kubeconfig for Bamboo |
+| `scripts/apply-app.sh` | Once | Creates the Deployment and Service for the app |
+| `scripts/bamboo-deploy.sh` | Bamboo, every deployment | Pasted into the Bamboo Script task |
+| `Makefile` | You | Runs the same steps from your own machine for testing |
 
-## How it works
+## Information to collect from the customer
 
-```
- commit ─► Bitbucket ─► Bamboo build plan (existing CI)
-                         └─ docker push <harbor-uat>/ajb-hr/be:<commit-sha>
-                                    │ successful build = new release, named "<commit-sha>-<build no.>"
-                                    ▼
-                        Bamboo deployment project ─ environment "nkp" (trigger: after successful build)
-                         └─ Script task: scripts/bamboo-deploy.sh   (runs on a Bamboo agent)
-                              ├─ tag = commit SHA from the release name  →  image <harbor-uat>/ajb-hr/be:<sha>
-                              ├─ kubectl set image deployment/<app>       (as bamboo-deployer, kubeconfig from a secret variable)
-                              ├─ kubectl rollout status                   (readiness probe decides)
-                              └─ kubectl rollout undo + job fails         if the new pods don't become ready
-                                    ▼
-                        NKP: namespace <ns>, Deployment <app>, pulls the image from Harbor
-```
+Fill this in at deployment time:
 
-**How Bamboo finds the image:** Bamboo doesn't watch Harbor. Every successful build of
-the CI plan creates a release, and the deployment project names it after the commit
-(`${bamboo.planRepository.revision}-${bamboo.buildNumber}`). CI tagged the image with
-that same commit SHA, so the deploy script builds the image reference from the release
-name. Nothing in the CI plan has to change.
+| Item | Example | Value |
+|---|---|---|
+| Namespace on NKP | `hr-chatbot` | |
+| App name (Deployment name) | `hr-chatbot-be` | |
+| Image repository in Harbor | `harbor-uat.example.com/ajb-hr/be` | |
+| Tag format: full SHA, short SHA (7 or 8 chars), any prefix | full SHA | |
+| Container port | `8080` | |
+| Health check path (blank if none) | `/health` | |
+| Environment variables or secrets the app needs | `DB_URL`, `API_KEY` | |
+| Harbor robot account (pull) for NKP | `robot$ajb-hr+nkp` | |
+| Does Harbor use a private CA? Do the NKP nodes trust it? | yes / yes | |
+| Bamboo agent that runs deployments; is `kubectl` installed? | local agent on the Bamboo VM | |
+| NKP API address, reachable from that agent | `https://10.0.0.10:6443` | |
+| Hostname for the app (optional) | `hr-be.apps.example.com` | |
 
-**Rollback:** in Bamboo, deploy an older release to the environment. Its name holds
-the older SHA, so the older image is deployed.
+## Steps
 
-Requirements on the Bamboo agent that runs the deployment: `sh`, `kubectl` (within one
-minor version of the NKP Kubernetes version), `base64`, and network access to the NKP API
-server (port 6443). The agent doesn't need Docker or Harbor access; the NKP nodes pull
-the image.
-
-## 0. Confirm before starting
-
-| Item | Why |
-|---|---|
-| Is the Harbor tag the **full** commit SHA or a short one (7/8 chars)? Any prefix? | Sets `tag_length` / `tag_prefix` |
-| Container port and health URL of the app (e.g. `8080`, `/health`) | Service and readiness probe (no health URL → TCP check) |
-| Environment variables or secrets the app needs | Put into secret `<app>-env` (step 1) |
-| Harbor robot account with pull on `ajb-hr` | Pull secret for NKP |
-| Which Bamboo agent runs deployments; is `kubectl` on it | Script task runs there |
-| Agent → NKP API `https://<nkp-api>:6443` reachable | `kubectl` from Bamboo |
-| Namespace name (e.g. `hr-chatbot`) | Everything lives there |
-
-## 1. NKP, one time (NKP admin)
+### 1. Prepare NKP (NKP admin, once)
 
 ```bash
-git clone https://github.com/anishbista60/nginx-cicd-demo.git && cd nginx-cicd-demo
+git clone https://github.com/anishbista60/nginx-cicd-demo.git
+cd nginx-cicd-demo
 export KUBECONFIG=<nkp-admin-kubeconfig>
-export HARBOR_HOST=<harbor-uat> HARBOR_USERNAME='robot$ajb-hr+nkp' HARBOR_PASSWORD='<token>'
-make nkp-setup NAMESPACE=hr-chatbot
+export HARBOR_HOST=<harbor> HARBOR_USERNAME='<robot-account>' HARBOR_PASSWORD='<robot-token>'
+make nkp-setup NAMESPACE=<namespace>
 ```
 
-This creates the namespace, the service account `bamboo-deployer` (it can manage
-deployments, services and ingresses in that namespace only, and can't create
-namespaces or read secrets), the pull secret `harbor-pull`, and writes
-**`bamboo-nkp.kubeconfig`**. The script checks the permissions at the end.
+This creates:
+- the namespace
+- service account `bamboo-deployer`, which can only manage apps in this namespace
+- pull secret `harbor-pull`
+- the file `bamboo-nkp.kubeconfig`, which Bamboo will use
 
-If the app needs environment variables or secrets, create them once, as admin:
+If the app needs environment variables, put them in a secret named `<app>-env`:
 ```bash
-kubectl -n hr-chatbot create secret generic hr-chatbot-be-env --from-env-file=app.env
+kubectl -n <namespace> create secret generic <app>-env --from-env-file=app.env
 ```
 
-## 2. First deployment of the app (once)
+### 2. Deploy the app the first time (once)
 
-Uses the restricted kubeconfig from step 1:
 ```bash
 unset KUBECONFIG
-make app NAMESPACE=hr-chatbot APP=hr-chatbot-be \
-  IMAGE=<harbor-uat>/ajb-hr/be:<current-commit-sha> PORT=<port> HEALTH_PATH=/<health> \
-  INGRESS_HOST=<optional host on NKP Traefik>
+make app NAMESPACE=<namespace> APP=<app> IMAGE=<image-repo>:<current-tag> \
+  PORT=<port> HEALTH_PATH=<health-path> INGRESS_HOST=<optional-hostname>
 ```
-It creates Deployment `hr-chatbot-be` (2 replicas, rolling update with
-`maxUnavailable: 0`, probes, `envFrom` secret `hr-chatbot-be-env` if present) and
-Service `hr-chatbot-be` (port 80 → `PORT`), plus an Ingress (class `kommander-traefik`)
-if `INGRESS_HOST` is set. Re-running it also resets the image to `IMAGE`.
 
-## 3. Rehearse what Bamboo will run
+This creates the Deployment (2 pods, rolling update) and a Service. If you give
+`INGRESS_HOST`, it also creates an Ingress on NKP's Traefik.
 
-`make deploy` sets the same environment variables Bamboo sets and runs
-`scripts/bamboo-deploy.sh`:
+### 3. Test the deploy script without Bamboo
+
+This sets the same variables Bamboo sets and runs the same script:
 ```bash
-make deploy NAMESPACE=hr-chatbot APP=hr-chatbot-be IMAGE_REPO=<harbor-uat>/ajb-hr/be \
+make deploy NAMESPACE=<namespace> APP=<app> IMAGE_REPO=<image-repo> \
   TAG_LENGTH=0 RELEASE=<commit-sha>-1
-make status NAMESPACE=hr-chatbot APP=hr-chatbot-be
+make status NAMESPACE=<namespace> APP=<app>
 ```
-To test with a stand-in app on another cluster, any image works. For example, the
-images of this repo's earlier demo, `docker.io/anish60/nginx-cicd-demo:sha-<7 chars>`,
-with `PORT=8080 HEALTH_PATH=/healthz TAG_PREFIX=sha- TAG_LENGTH=7`.
 
-## 4. Bamboo configuration (UI)
+### 4. Configure Bamboo (in the UI)
 
-1. **Create the deployment project:** Create → *Create deployment project*.
-   Name `HR Chatbot BE`, linked build plan = the existing HR Chatbot CI plan, branch
-   = the plan's main branch.
-2. **Release versioning:** deployment project → *Edit project* → *Release versioning*:
-   `${bamboo.planRepository.revision}-${bamboo.buildNumber}`. Leave "applies to
-   branches" off. After the first build, check that the release name starts with the
-   full commit SHA. The build number keeps names unique when the same commit is built
-   twice.
-3. **Add the environment** `nkp` (*Add environment*, then *Set up tasks*):
-   - Keep the default *Clean working directory* task. No artifact download is needed.
-   - Add a **Script** task: Interpreter *Shell*, Script location *Inline*. Paste the
-     whole of `scripts/bamboo-deploy.sh`.
-4. **Variables** (environment `nkp` → *Variables*):
+1. **Create → Create deployment project.** Link it to the existing build plan of the app.
+2. **Release versioning** (Edit project → Release versioning). Set the name to:
+   ```
+   ${bamboo.planRepository.revision}-${bamboo.buildNumber}
+   ```
+   Releases are then named like `a1b2c3d…-42`: the commit SHA, then the build number.
+3. **Add environment** `nkp`. Under *Set up tasks*, keep *Clean working directory* and
+   add a **Script** task:
+   - Interpreter: Shell
+   - Script location: Inline
+   - Script body: paste the whole of `scripts/bamboo-deploy.sh`
+4. **Variables** (environment `nkp` → Variables):
 
-   | Variable | Example | Notes |
-   |---|---|---|
-   | `nkp_kubeconfig_secret` | output of `base64 -w0 bamboo-nkp.kubeconfig` | Masked (name contains `secret`) |
-   | `image_repo` | `<harbor-uat>/ajb-hr/be` | |
-   | `namespace` | `hr-chatbot` | |
-   | `app` | `hr-chatbot-be` | Deployment and container name |
-   | `tag_length` | `0` | `0` = full SHA, or `7`/`8` |
-   | `tag_prefix` | `none` | Text before the SHA in the tag, if any |
-   | `image_tag` | `none` | Set a tag here to force a specific image, e.g. `latest` |
-   | `rollout_timeout` | `300s` | |
-5. **Agent:** environment `nkp` → *Agents assignment*: dedicate it to the agent that has
-   `kubectl` (or add a requirement on a `kubectl` capability).
-6. **Trigger:** environment `nkp` → *Triggers* → *After successful build plan*.
-   Leave it off to deploy only by clicking *Deploy*.
+   | Variable | Value |
+   |---|---|
+   | `nkp_kubeconfig_secret` | output of `base64 -w0 bamboo-nkp.kubeconfig` (hidden in logs because the name contains `secret`) |
+   | `image_repo` | image repository, e.g. `harbor-uat.example.com/ajb-hr/be` |
+   | `namespace` | the namespace |
+   | `app` | the app name |
+   | `tag_length` | `0` for the full SHA, or `7` / `8` |
+   | `tag_prefix` | `none`, or the text before the SHA in the tag |
+   | `image_tag` | `none` (set a tag here only to force a specific image) |
+   | `rollout_timeout` | `300s` |
+5. **Agents assignment.** Pick the agent that has `kubectl`.
+6. **Triggers.** Add *After successful build plan* to deploy automatically. Without
+   it, you deploy by clicking *Deploy*.
 
-## 5. Test it together
+### 5. Test together
 
-1. Run the CI plan (or push a commit). A new release `<sha>-<n>` appears in the
-   deployment project, and environment `nkp` deploys it. The log shows
-   `Release …: deploying <harbor-uat>/ajb-hr/be:<sha>` and ends with
-   `Deployed …` and the pod list.
-2. Check: `make status` (or `kubectl -n hr-chatbot get pods`); the pods run the new tag.
-3. **Rollback:** environment `nkp` → *Deploy* → choose the previous release.
-4. **Failure handling:** set `image_tag` to `does-not-exist`, deploy any release, and
-   it rolls back and turns red. Set `image_tag` back to `none` afterwards.
+1. Run the build plan, or push a commit.
+2. A new release appears in the deployment project and is deployed to `nkp`.
+3. Check the pods: `kubectl -n <namespace> get pods`. They should run the new tag.
+4. Rollback: environment `nkp` → *Deploy* → choose an older release.
+5. Failure test: set `image_tag` to `does-not-exist` and deploy. The script rolls
+   back and the deployment shows as failed. Set `image_tag` back to `none`.
 
-Every Bamboo deployment is recorded in
-`kubectl -n <ns> rollout history deployment/<app>` as `Bamboo release <name>: <image>`.
+## Harbor certificate
+
+If Harbor uses a certificate from a private CA, only one place has to trust it: **the
+NKP nodes**, because they pull the image.
+
+- The Bamboo agent never connects to Harbor during deployment, so it doesn't need
+  the CA.
+- `kubectl` connects to the NKP API, and the kubeconfig from step 1 already contains
+  the NKP CA.
+
+**Check whether the nodes trust Harbor (NKP admin):**
+```bash
+kubectl -n <namespace> run harbor-test --restart=Never \
+  --image=<image-repo>:<existing-tag> --overrides='{"spec":{"imagePullSecrets":[{"name":"harbor-pull"}]}}'
+kubectl -n <namespace> get pod harbor-test      # Running or Completed = OK
+kubectl -n <namespace> describe pod harbor-test | grep -i x509   # x509 error = CA not trusted
+kubectl -n <namespace> delete pod harbor-test
+```
+
+**If you get an x509 error**, the NKP admin has to add the Harbor CA to the cluster's
+registry configuration. That is the permanent fix, and it survives node replacement.
+For a quick test in a lab you can add it by hand on each node:
+```bash
+mkdir -p /etc/containerd/certs.d/<harbor>
+cp harbor-ca.crt /etc/containerd/certs.d/<harbor>/ca.crt
+cat > /etc/containerd/certs.d/<harbor>/hosts.toml <<EOF
+server = "https://<harbor>"
+[host."https://<harbor>"]
+  ca = "/etc/containerd/certs.d/<harbor>/ca.crt"
+EOF
+```
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
+| Problem | Fix |
 |---|---|
-| `kubectl: not found` | Not installed on the agent that ran the job, or not on the PATH of the Bamboo service user (systemd uses a minimal PATH: put it in `/usr/local/bin`) |
-| `Unable to connect to the server` | Agent can't reach the NKP API on 6443 (firewall, proxy: add the API host to `no_proxy`), or the variable holds an incomplete kubeconfig: re-copy `base64 -w0` |
-| `deployments.apps "<app>" not found` | Step 2 not done, or `namespace`/`app` variables differ from it |
-| `forbidden` | Step 1 run for a different namespace |
-| Pods `ImagePullBackOff`, `not found` | The tag doesn't exist: check `tag_length`/`tag_prefix` against Harbor, and that the release name starts with the SHA |
-| Pods `ImagePullBackOff`, `unauthorized` / `x509` | Pull secret missing or wrong (re-run step 1 with `HARBOR_*`), or NKP nodes don't trust the Harbor CA |
-| Rollout times out, pods `Running` but not ready | Health path or port wrong (step 2), or the app needs env vars (`<app>-env` secret) |
-| Release name doesn't contain the SHA | Release versioning not set as in step 4.2. Meanwhile, deploy with `image_tag` set |
+| `kubectl: not found` | Install kubectl in `/usr/local/bin` on the agent. Bamboo running under systemd has a short PATH. |
+| `Unable to connect to the server` | The agent can't reach the NKP API on port 6443 (firewall or proxy), or the kubeconfig variable is incomplete. Copy the `base64 -w0` output again. |
+| `deployments.apps "<app>" not found` | Step 2 wasn't run, or the `namespace` / `app` variables don't match it. |
+| `forbidden` | Step 1 was run for a different namespace. |
+| `ImagePullBackOff` with `not found` | The tag doesn't exist in Harbor. Check `tag_length` and `tag_prefix`, and that the release name starts with the commit SHA. |
+| `ImagePullBackOff` with `x509` | The NKP nodes don't trust the Harbor CA. See [Harbor certificate](#harbor-certificate). |
+| `ImagePullBackOff` with `unauthorized` | The pull secret is wrong. Run step 1 again with the right robot account. |
+| Pods running but not ready, rollout times out | Wrong port or health path (step 2), or missing environment variables. |
 
 ## Cleanup
 
 ```bash
 export KUBECONFIG=<nkp-admin-kubeconfig>
-kubectl delete namespace hr-chatbot
+kubectl delete namespace <namespace>
 ```
-In Bamboo, delete the deployment project.
+Then delete the deployment project in Bamboo.
