@@ -25,7 +25,9 @@ To roll back, deploy an older release from Bamboo.
 | File | Used by | Purpose |
 |---|---|---|
 | `nkp/setup.sh`, `nkp/rbac.yaml` | NKP admin, once | Creates the namespace, a service account for Bamboo, the Harbor pull secret, and a kubeconfig for Bamboo |
-| `scripts/apply-app.sh` | Once | Creates the Deployment and Service for the app |
+| `k8s/deployment.yaml`, `k8s/service.yaml` | `scripts/deploy-app.sh` | The app `chatbot-application` |
+| `k8s/ingress.yaml` | You, optional | Exposes the app on NKP's Traefik |
+| `scripts/deploy-app.sh` | Once | Applies the Deployment and Service the first time |
 | `scripts/bamboo-deploy.sh` | Bamboo, every deployment | Pasted into the Bamboo Script task |
 | `Makefile` | You | Runs the same steps from your own machine for testing |
 
@@ -36,11 +38,9 @@ Fill this in at deployment time:
 | Item | Example | Value |
 |---|---|---|
 | Namespace on NKP | `hr-chatbot` | |
-| App name (Deployment name) | `hr-chatbot-be` | |
 | Image repository in Harbor | `harbor-uat.example.com/ajb-hr/be` | |
 | Tag format: full SHA, short SHA (7 or 8 chars), any prefix | full SHA | |
 | Container port | `8080` | |
-| Health check path (blank if none) | `/health` | |
 | Environment variables or secrets the app needs | `DB_URL`, `API_KEY` | |
 | Harbor robot account (pull) for NKP | `robot$ajb-hr+nkp` | |
 | Does Harbor use a private CA? Do the NKP nodes trust it? | yes / yes | |
@@ -66,29 +66,31 @@ This creates:
 - pull secret `harbor-pull`
 - the file `bamboo-nkp.kubeconfig`, which Bamboo will use
 
-If the app needs environment variables, put them in a secret named `<app>-env`:
+If the app needs environment variables, put them in the secret `chatbot-application-env`:
 ```bash
-kubectl -n <namespace> create secret generic <app>-env --from-env-file=app.env
+kubectl -n <namespace> create secret generic chatbot-application-env --from-env-file=app.env
 ```
 
 ### 2. Deploy the app the first time (once)
 
 ```bash
 unset KUBECONFIG
-make app NAMESPACE=<namespace> APP=<app> IMAGE=<image-repo>:<current-tag> \
-  PORT=<port> HEALTH_PATH=<health-path> INGRESS_HOST=<optional-hostname>
+make app NAMESPACE=<namespace> IMAGE=<image-repo>:<current-tag> PORT=<port>
 ```
 
-This creates the Deployment (2 pods, rolling update) and a Service. If you give
-`INGRESS_HOST`, it also creates an Ingress on NKP's Traefik.
+This applies `k8s/deployment.yaml` (2 pods, rolling update) and `k8s/service.yaml`.
+
+To expose the app with a hostname (optional):
+```bash
+sed 's/HOST_PLACEHOLDER/<hostname>/' k8s/ingress.yaml | kubectl -n <namespace> apply -f -
+```
 
 ### 3. Test the deploy script without Bamboo
 
 This sets the same variables Bamboo sets and runs the same script:
 ```bash
-make deploy NAMESPACE=<namespace> APP=<app> IMAGE_REPO=<image-repo> \
-  TAG_LENGTH=0 RELEASE=<commit-sha>-1
-make status NAMESPACE=<namespace> APP=<app>
+make deploy NAMESPACE=<namespace> IMAGE_REPO=<image-repo> TAG_LENGTH=0 RELEASE=<commit-sha>-1
+make status NAMESPACE=<namespace>
 ```
 
 ### 4. Configure Bamboo (in the UI)
@@ -111,7 +113,7 @@ make status NAMESPACE=<namespace> APP=<app>
    | `nkp_kubeconfig_secret` | output of `base64 -w0 bamboo-nkp.kubeconfig` (hidden in logs because the name contains `secret`) |
    | `image_repo` | image repository, e.g. `harbor-uat.example.com/ajb-hr/be` |
    | `namespace` | the namespace |
-   | `app` | the app name |
+   | `app` | `chatbot-application` |
    | `tag_length` | `0` for the full SHA, or `7` / `8` |
    | `tag_prefix` | `none`, or the text before the SHA in the tag |
    | `image_tag` | `none` (set a tag here only to force a specific image) |
@@ -167,12 +169,12 @@ EOF
 |---|---|
 | `kubectl: not found` | Install kubectl in `/usr/local/bin` on the agent. Bamboo running under systemd has a short PATH. |
 | `Unable to connect to the server` | The agent can't reach the NKP API on port 6443 (firewall or proxy), or the kubeconfig variable is incomplete. Copy the `base64 -w0` output again. |
-| `deployments.apps "<app>" not found` | Step 2 wasn't run, or the `namespace` / `app` variables don't match it. |
+| `deployments.apps "chatbot-application" not found` | Step 2 wasn't run, or the `namespace` variable doesn't match it. |
 | `forbidden` | Step 1 was run for a different namespace. |
 | `ImagePullBackOff` with `not found` | The tag doesn't exist in Harbor. Check `tag_length` and `tag_prefix`, and that the release name starts with the commit SHA. |
 | `ImagePullBackOff` with `x509` | The NKP nodes don't trust the Harbor CA. See [Harbor certificate](#harbor-certificate). |
 | `ImagePullBackOff` with `unauthorized` | The pull secret is wrong. Run step 1 again with the right robot account. |
-| Pods running but not ready, rollout times out | Wrong port or health path (step 2), or missing environment variables. |
+| Pods restart (`CrashLoopBackOff`) | Check `kubectl logs`: usually missing environment variables. |
 
 ## Cleanup
 

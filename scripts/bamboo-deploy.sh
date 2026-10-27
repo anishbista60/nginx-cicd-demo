@@ -11,7 +11,7 @@
 #   nkp_kubeconfig_secret  base64 kubeconfig for bamboo-deployer (nkp/setup.sh)
 #   image_repo             e.g. harbor-uat.example.com/ajb-hr/be
 #   namespace              e.g. hr-chatbot
-#   app                    Deployment and container name, e.g. hr-chatbot-be
+#   app                    Deployment and container name (default chatbot-application)
 #   tag_length             characters of the SHA used in the tag (0 = full SHA)
 #   tag_prefix             text before the SHA in the tag, or "none"
 #   image_tag              deploy this tag instead of the release's, or "none"
@@ -22,7 +22,7 @@ set -eu
 release="${bamboo_deploy_release:?no release (run as a Bamboo deployment)}"
 repo="${bamboo_image_repo:?set variable image_repo}"
 ns="${bamboo_namespace:?set variable namespace}"
-app="${bamboo_app:?set variable app}"
+app="${bamboo_app:-chatbot-application}"
 tag_length="${bamboo_tag_length:-0}"
 tag_prefix="${bamboo_tag_prefix:-none}"
 image_tag="${bamboo_image_tag:-none}"

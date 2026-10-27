@@ -1,0 +1,21 @@
+# Optional, applied by hand (not by the scripts). Replace HOST_PLACEHOLDER:
+#   sed 's/HOST_PLACEHOLDER/<hostname>/' k8s/ingress.yaml | kubectl -n <namespace> apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chatbot-application
+  labels:
+    app: chatbot-application
+spec:
+  ingressClassName: kommander-traefik
+  rules:
+    - host: HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chatbot-application
+                port:
+                  name: http

@@ -43,7 +43,7 @@
   <rect x="750" y="392" width="210" height="130" rx="6" fill="#ffffff" stroke="#1a73e8"/>
   <text x="765" y="415" font-size="12">namespace &lt;ns&gt;</text>
   <rect x="770" y="428" width="170" height="40" rx="4" fill="#f8f9fa" stroke="#5f6368"/>
-  <text x="855" y="453" text-anchor="middle" font-size="12">Deployment &lt;app&gt;</text>
+  <text x="855" y="453" text-anchor="middle" font-size="12">chatbot-application</text>
   <circle cx="815" cy="495" r="12" fill="#ffffff" stroke="#5f6368"/>
   <circle cx="855" cy="495" r="12" fill="#ffffff" stroke="#5f6368"/>
   <text x="900" y="499" text-anchor="middle" font-size="12">pods</text>

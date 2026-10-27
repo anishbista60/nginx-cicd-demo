@@ -1,0 +1,41 @@
+# The app. Bamboo only changes the image of this Deployment on each release.
+# IMAGE_PLACEHOLDER and PORT_PLACEHOLDER are replaced by scripts/deploy-app.sh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatbot-application
+  labels:
+    app: chatbot-application
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: chatbot-application
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: chatbot-application
+    spec:
+      imagePullSecrets:
+        - name: harbor-pull
+      containers:
+        - name: chatbot-application
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - name: http
+              containerPort: PORT_PLACEHOLDER
+          # Environment variables from this secret, if it exists.
+          envFrom:
+            - secretRef:
+                name: chatbot-application-env
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
