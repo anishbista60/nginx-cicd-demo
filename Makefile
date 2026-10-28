@@ -2,8 +2,10 @@
 # Override on the command line, e.g. make deploy RELEASE=<commit-sha>-1
 NAMESPACE      ?= hr-chatbot
 IMAGE_REPO     ?= harbor-uat.example.com/ajb-hr/be
+TAG_FROM       ?= sha
 TAG_LENGTH     ?= 0
 TAG_PREFIX     ?= none
+IMAGE_TAG      ?= none
 PORT           ?= 8080
 KUBECONFIG_OUT ?= bamboo-nkp.kubeconfig
 
@@ -16,12 +18,13 @@ app:                ## First deployment (Deployment + Service): make app IMAGE=<
 	@test -n "$(IMAGE)" || { echo "IMAGE is required"; exit 1; }
 	KUBECONFIG=$(KUBECONFIG_OUT) NAMESPACE=$(NAMESPACE) IMAGE=$(IMAGE) PORT=$(PORT) ./scripts/deploy-app.sh
 
-deploy:             ## Exactly what Bamboo runs: make deploy RELEASE=<commit-sha>-<build>
+deploy:             ## Exactly what Bamboo runs: make deploy RELEASE=<commit-sha>-<build> (or RELEASE=<tag> TAG_FROM=release)
 	@test -n "$(RELEASE)" || { echo "RELEASE is required"; exit 1; }
 	bamboo_deploy_release=$(RELEASE) \
 	bamboo_nkp_kubeconfig_secret=$$(base64 -w0 $(KUBECONFIG_OUT)) \
 	bamboo_image_repo=$(IMAGE_REPO) bamboo_namespace=$(NAMESPACE) \
-	bamboo_tag_length=$(TAG_LENGTH) bamboo_tag_prefix=$(TAG_PREFIX) \
+	bamboo_tag_from=$(TAG_FROM) bamboo_tag_length=$(TAG_LENGTH) \
+	bamboo_tag_prefix=$(TAG_PREFIX) bamboo_image_tag=$(IMAGE_TAG) \
 	  sh ./scripts/bamboo-deploy.sh
 
 status:             ## Pods and rollout history

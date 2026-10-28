@@ -20,6 +20,31 @@ to Harbor, tagged with the commit SHA. This repo only adds the deployment side (
 
 To roll back, deploy an older release from Bamboo.
 
+## How Bamboo deploys
+
+Bamboo has two kinds of projects:
+
+- A **build plan** (CI) checks out the code, builds the image, and pushes it. The
+  customer already has this.
+- A **deployment project** (CD) is linked to one build plan. Every successful build
+  can become a **release**, which is a named snapshot of that build. You **deploy a
+  release to an environment** (here, `nkp`). The environment runs its tasks, which
+  here is a single Script task, on an agent.
+
+The script only gets the **release name** from Bamboo (`bamboo_deploy_release`), so
+the release name has to tell it which image tag to deploy. There are two ways,
+selected with the variable `tag_from`:
+
+| `tag_from` | CI tags images with | Release name | Tag deployed |
+|---|---|---|---|
+| `sha` (default) | the commit SHA | `${bamboo.planRepository.revision}-${bamboo.buildNumber}`, e.g. `1e421cc…-42` | `1e421cc…` (optionally shortened or prefixed) |
+| `release` | a version, e.g. `1.4.2` | the tag itself, e.g. `1.4.2` | `1.4.2` |
+
+With `tag_from=release`, you name the release when you create it (Bamboo suggests
+the next name, which you can edit), or the build plan provides it (see
+[Version tags from CI](#version-tags-from-ci)). Either way, rollback is the same:
+deploy an older release.
+
 ## Files
 
 | File | Used by | Purpose |
@@ -39,7 +64,8 @@ Fill this in at deployment time:
 |---|---|---|
 | Namespace on NKP | `hr-chatbot` | |
 | Image repository in Harbor | `harbor-uat.example.com/ajb-hr/be` | |
-| Tag format: full SHA, short SHA (7 or 8 chars), any prefix | full SHA | |
+| Tag format: commit SHA (full, 7 or 8 chars, prefix?) or a version like `1.4.2` | full SHA | |
+| Is every tag unique, or are tags like `latest` reused? | unique | |
 | Container port | `8080` | |
 | Environment variables or secrets the app needs | `DB_URL`, `API_KEY` | |
 | Harbor robot account (pull) for NKP | `robot$ajb-hr+nkp` | |
@@ -114,8 +140,9 @@ make status NAMESPACE=<namespace>
    | `image_repo` | image repository, e.g. `harbor-uat.example.com/ajb-hr/be` |
    | `namespace` | the namespace |
    | `app` | `chatbot-application` |
-   | `tag_length` | `0` for the full SHA, or `7` / `8` |
-   | `tag_prefix` | `none`, or the text before the SHA in the tag |
+   | `tag_from` | `sha` or `release` (see [How Bamboo deploys](#how-bamboo-deploys)) |
+   | `tag_length` | `tag_from=sha`: `0` for the full SHA, or `7` / `8` |
+   | `tag_prefix` | `tag_from=sha`: `none`, or the text before the SHA in the tag |
    | `image_tag` | `none` (set a tag here only to force a specific image) |
    | `rollout_timeout` | `300s` |
 5. **Agents assignment.** Pick the agent that has `kubectl`.
@@ -130,6 +157,55 @@ make status NAMESPACE=<namespace>
 4. Rollback: environment `nkp` → *Deploy* → choose an older release.
 5. Failure test: set `image_tag` to `does-not-exist` and deploy. The script rolls
    back and the deployment shows as failed. Set `image_tag` back to `none`.
+
+## Demo with nginx from Docker Hub
+
+Use this to show the whole flow before you know the customer's image. Docker Hub tags
+nginx by version, so use `tag_from=release` and name each release after an nginx
+tag. The NKP nodes need internet access to Docker Hub. Anonymous pulls are
+rate-limited, which is fine for a demo.
+
+1. Set up NKP without Harbor: `make nkp-setup NAMESPACE=nginx-demo`, leaving the
+   `HARBOR_*` variables unset. The Deployment refers to the pull secret `harbor-pull`,
+   which won't exist. Kubernetes only logs a warning for that, and public images
+   still pull.
+2. Deploy the first version. nginx listens on port 80:
+   ```bash
+   make app NAMESPACE=nginx-demo IMAGE=nginx:1.26 PORT=80
+   ```
+3. Try a deployment without Bamboo:
+   ```bash
+   make deploy NAMESPACE=nginx-demo IMAGE_REPO=nginx TAG_FROM=release RELEASE=1.27
+   make status NAMESPACE=nginx-demo
+   ```
+4. In Bamboo, a deployment project must be linked to a build plan. If you don't have
+   one, create a plan with a single Script task (`echo build`) and run it once.
+   Create the deployment project as in [step 4](#4-configure-bamboo-in-the-ui), with
+   `image_repo` = `nginx`, `namespace` = `nginx-demo`, and `tag_from` = `release`.
+   Skip the release-versioning step and the trigger.
+5. Demo:
+   - **Create release** from the plan's build result, named `1.26`. Deploy it to `nkp`.
+   - Create release `1.27` and deploy it. The pods roll to nginx 1.27.
+   - **Rollback:** deploy release `1.26` again.
+   - **Failure:** create release `9.99` and deploy it. The image doesn't exist, so
+     the script rolls back and Bamboo shows the deployment as failed.
+
+Check the running version with
+`kubectl -n nginx-demo get pods -o jsonpath='{..image}'`.
+
+## Version tags from CI
+
+If the customer's build plan tags images with a version instead of the SHA, the
+build has to tell Bamboo which tag it pushed. At the end of the build plan, add an
+**Inject Bamboo variables** task that reads a file containing `image_tag=<tag>`, with
+scope *Result*. Then set the deployment project's release naming to
+`${bamboo.inject.image_tag}` and `tag_from` to `release`. Check that the customer's
+Bamboo version accepts injected variables in release naming. If it doesn't, create
+the releases by hand with the tag as the name.
+
+Tags that are reused, such as `latest`, don't work with this script. Deploying the
+same tag again changes nothing, so no new pods start, and rollback can't tell versions
+apart. Ask the customer for unique tags.
 
 ## Harbor certificate
 
@@ -171,7 +247,7 @@ EOF
 | `Unable to connect to the server` | The agent can't reach the NKP API on port 6443 (firewall or proxy), or the kubeconfig variable is incomplete. Copy the `base64 -w0` output again. |
 | `deployments.apps "chatbot-application" not found` | Step 2 wasn't run, or the `namespace` variable doesn't match it. |
 | `forbidden` | Step 1 was run for a different namespace. |
-| `ImagePullBackOff` with `not found` | The tag doesn't exist in Harbor. Check `tag_length` and `tag_prefix`, and that the release name starts with the commit SHA. |
+| `ImagePullBackOff` with `not found` | The tag doesn't exist in the registry. With `tag_from=sha`: check `tag_length` and `tag_prefix`, and that the release name starts with the commit SHA. With `tag_from=release`: the release name must be exactly the tag. |
 | `ImagePullBackOff` with `x509` | The NKP nodes don't trust the Harbor CA. See [Harbor certificate](#harbor-certificate). |
 | `ImagePullBackOff` with `unauthorized` | The pull secret is wrong. Run step 1 again with the right robot account. |
 | Pods restart (`CrashLoopBackOff`) | Check `kubectl logs`: usually missing environment variables. |
