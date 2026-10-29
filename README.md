@@ -54,7 +54,7 @@ deploy an older release.
 | `k8s/ingress.yaml` | You, optional | Exposes the app on NKP's Traefik |
 | `scripts/deploy-app.sh` | Once | Applies the Deployment and Service the first time |
 | `scripts/bamboo-deploy.sh` | Bamboo, every deployment | Pasted into the Bamboo Script task |
-| `Makefile` | You | Runs the same steps from your own machine for testing |
+| `Makefile` | You, optional | Shortcuts for the same commands, if `make` is installed |
 
 ## Information to collect from the customer
 
@@ -78,12 +78,16 @@ Fill this in at deployment time:
 
 ### 1. Prepare NKP (NKP admin, once)
 
+You need `bash`, `kubectl` and `unzip`. `make` is not needed: every command below
+calls the scripts directly. (If you have `make`, the `Makefile` offers the same steps
+as shortcuts.)
+
 ```bash
-git clone https://github.com/anishbista60/nginx-cicd-demo.git
-cd nginx-cicd-demo
+unzip bamboo-cd-demo.zip
+cd bamboo-cd-demo
 export KUBECONFIG=<nkp-admin-kubeconfig>
 export HARBOR_HOST=<harbor> HARBOR_USERNAME='<robot-account>' HARBOR_PASSWORD='<robot-token>'
-make nkp-setup NAMESPACE=<namespace>
+NAMESPACE=<namespace> bash nkp/setup.sh
 ```
 
 This creates:
@@ -99,9 +103,11 @@ kubectl -n <namespace> create secret generic chatbot-application-env --from-env-
 
 ### 2. Deploy the app the first time (once)
 
+From here on, use the kubeconfig Bamboo will use. This also checks that its
+permissions are right.
 ```bash
-unset KUBECONFIG
-make app NAMESPACE=<namespace> IMAGE=<image-repo>:<current-tag> PORT=<port>
+export KUBECONFIG=$PWD/bamboo-nkp.kubeconfig
+NAMESPACE=<namespace> IMAGE=<image-repo>:<current-tag> PORT=<port> bash scripts/deploy-app.sh
 ```
 
 This applies `k8s/deployment.yaml` (2 pods, rolling update) and `k8s/service.yaml`.
@@ -113,10 +119,14 @@ sed 's/HOST_PLACEHOLDER/<hostname>/' k8s/ingress.yaml | kubectl -n <namespace> a
 
 ### 3. Test the deploy script without Bamboo
 
-This sets the same variables Bamboo sets and runs the same script:
+This sets the same variables Bamboo sets and runs the same script (with
+`KUBECONFIG` still set from step 2):
 ```bash
-make deploy NAMESPACE=<namespace> IMAGE_REPO=<image-repo> TAG_LENGTH=0 RELEASE=<commit-sha>-1
-make status NAMESPACE=<namespace>
+bamboo_deploy_release=<commit-sha>-1 bamboo_image_repo=<image-repo> \
+bamboo_namespace=<namespace> bamboo_tag_length=0 \
+  sh scripts/bamboo-deploy.sh
+kubectl -n <namespace> get deploy,pods,svc,ingress -o wide
+kubectl -n <namespace> rollout history deployment/chatbot-application
 ```
 
 ### 4. Configure Bamboo (in the UI)
@@ -165,18 +175,24 @@ nginx by version, so use `tag_from=release` and name each release after an nginx
 tag. The NKP nodes need internet access to Docker Hub. Anonymous pulls are
 rate-limited, which is fine for a demo.
 
-1. Set up NKP without Harbor: `make nkp-setup NAMESPACE=nginx-demo`, leaving the
-   `HARBOR_*` variables unset. The Deployment refers to the pull secret `harbor-pull`,
-   which won't exist. Kubernetes only logs a warning for that, and public images
-   still pull.
+1. Set up NKP without Harbor, leaving the `HARBOR_*` variables unset. The Deployment
+   refers to the pull secret `harbor-pull`, which won't exist. Kubernetes only logs a
+   warning for that, and public images still pull.
+   ```bash
+   export KUBECONFIG=<nkp-admin-kubeconfig>
+   NAMESPACE=nginx-demo bash nkp/setup.sh
+   ```
 2. Deploy the first version. nginx listens on port 80:
    ```bash
-   make app NAMESPACE=nginx-demo IMAGE=nginx:1.26 PORT=80
+   export KUBECONFIG=$PWD/bamboo-nkp.kubeconfig
+   NAMESPACE=nginx-demo IMAGE=nginx:1.26 PORT=80 bash scripts/deploy-app.sh
    ```
 3. Try a deployment without Bamboo:
    ```bash
-   make deploy NAMESPACE=nginx-demo IMAGE_REPO=nginx TAG_FROM=release RELEASE=1.27
-   make status NAMESPACE=nginx-demo
+   bamboo_deploy_release=1.27 bamboo_image_repo=nginx \
+   bamboo_namespace=nginx-demo bamboo_tag_from=release \
+     sh scripts/bamboo-deploy.sh
+   kubectl -n nginx-demo get pods -o wide
    ```
 4. In Bamboo, a deployment project must be linked to a build plan. If you don't have
    one, create a plan with a single Script task (`echo build`) and run it once.
